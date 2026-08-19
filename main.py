@@ -1,15 +1,19 @@
 import os
 import io
-import asyncio
 import logging
-from concurrent.futures import ThreadPoolExecutor
+import asyncio
+import requests
 from aiohttp import web
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import CommandStart
-from aiogram.types import BufferedInputFile, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
-from rembg import remove, new_session
-from PIL import Image
+from aiogram.types import (
+    BufferedInputFile, 
+    InlineKeyboardMarkup, 
+    InlineKeyboardButton, 
+    CallbackQuery
+)
 
+# 1. BOT SOZLAMALARI
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 INSTAGRAM_LINK = "https://www.instagram.com/murodovvv_686"
 
@@ -17,10 +21,7 @@ logging.basicConfig(level=logging.INFO)
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-# Yuqori aniqlikdagi u2net neyrotarmoq modelini xotiraga tayyorlaymiz
-session = new_session("u2net")
-executor = ThreadPoolExecutor(max_workers=2)
-
+# Render serveri to'xtab qolmasligi uchun
 async def handle(request):
     return web.Response(text="Bot 24/7 faol ishlamoqda!")
 
@@ -33,6 +34,7 @@ async def start_dummy_server():
     site = web.TCPSite(runner, '0.0.0.0', port)
     await site.start()
 
+# 2. INTERFEYS
 def get_sub_keyboard():
     return InlineKeyboardMarkup(
         inline_keyboard=[
@@ -41,55 +43,53 @@ def get_sub_keyboard():
         ]
     )
 
-# ORIGINAL 4K SIFATNI SAQLASH ALGORITMI
-def process_hd_image(image_bytes: bytes) -> bytes:
-    input_image = Image.open(io.BytesIO(image_bytes))
-    
-    # Original rasmning o'lchamini olamiz (masalan: 3840x2160)
-    orig_width, orig_height = input_image.size
-    
-    # rembg orqali fonni tozalash
-    output_image = remove(input_image, session=session)
-    
-    # Original 4K o'lchamga qaytarish va piksel tiniqligini saqlash (LANCZOS resampling)
-    if output_image.size != (orig_width, orig_height):
-        output_image = output_image.resize((orig_width, orig_height), Image.Resampling.LANCZOS)
-    
-    output_buffer = io.BytesIO()
-    # PNG holatida maksimal (100%) sifat bilan saqlash
-    output_image.save(output_buffer, format="PNG", optimize=False)
-    output_buffer.seek(0)
-    return output_buffer.read()
+# 3. HIGH-RESOLUTION FONNI TOZALASH
+def remove_bg_hd(image_bytes: bytes) -> bytes:
+    # 4K va HD sifatni buzmasdan qaytaruvchi server so'rovi
+    response = requests.post(
+        "https://clipdrop-api.co/remove-background/v1",
+        files={'image_file': ('image.jpg', image_bytes, 'image/jpeg')},
+        headers={"x-api-key": ""}
+    )
+    if response.status_code == 200:
+        return response.content
+    return None
 
+# 4. BOT HANDLERLARI
 @dp.message(CommandStart())
 async def start_cmd(message: types.Message):
-    await message.answer(
-        "👋 **Salom! Men Pro (4K) rasmlar fonini tozalovchi botman.**\n\n"
-        "Menga rasm yuboring!", 
-        reply_markup=get_sub_keyboard(), 
-        parse_mode="Markdown"
+    welcome_text = (
+        "👋 **Salom! Men Pro (4K Ultra-HD) rasmlar fonini tozalovchi botman.**\n\n"
+        "Botdan foydalanish va Ultra-HD sifatda rasm olish uchun "
+        "avval mening Instagram sahifamga obuna bo'ling!"
     )
+    await message.answer(welcome_text, reply_markup=get_sub_keyboard(), parse_mode="Markdown")
 
 @dp.callback_query(F.data == "check_sub")
 async def check_sub_callback(callback: CallbackQuery):
-    await callback.answer("✅ Obuna tasdiqlandi! Endi rasm yuboring.", show_alert=True)
-    await callback.message.answer("📸 4K sifatda ishlov berish uchun rasm yuboring!")
+    await callback.answer("✅ Obuna tasdiqlandi! Endi rasm yuborishingiz mumkin.", show_alert=True)
+    await callback.message.answer("📸 Menga fonini olib tashlamoqchi bo'lgan rasmingizni yuboring!")
 
 @dp.message(F.photo)
 async def handle_photo(message: types.Message):
     photo_id = message.photo[-1].file_id
+    confirm_text = (
+        "⚡ **Pro (4K Ultra-HD) ishlov berish**\n\n"
+        "Instagram sahifamizga obuna bo'lganingizni tasdiqlang va "
+        "**'A'lo sifatda yuklash'** tugmasini bosing:"
+    )
     process_keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="📸 Instagram Profil", url=INSTAGRAM_LINK)],
             [InlineKeyboardButton(text="🚀 4K Ultra-HD yuklash", callback_data=f"process_{photo_id}")]
         ]
     )
-    await message.answer("⚡ **4K Original sifatda ishlov berishni tasdiqlang:**", reply_markup=process_keyboard)
+    await message.answer(confirm_text, reply_markup=process_keyboard, parse_mode="Markdown")
 
 @dp.callback_query(F.data.startswith("process_"))
 async def process_photo_callback(callback: CallbackQuery):
     photo_id = callback.data.split("process_")[1]
-    status_msg = await callback.message.answer("⚡ **4K Ultra-HD ishlov berilmoqda, kuting...**")
+    status_msg = await callback.message.answer("⚡ **Original 4K Ultra-HD ishlov berilmoqda, biroz kuting...**", parse_mode="Markdown")
     await callback.answer()
     
     try:
@@ -98,18 +98,27 @@ async def process_photo_callback(callback: CallbackQuery):
         
         loop = asyncio.get_event_loop()
         clean_png_bytes = await loop.run_in_executor(
-            executor, process_hd_image, photo_bytes.read()
+            None, remove_bg_hd, photo_bytes.read()
         )
         
-        result_file = BufferedInputFile(clean_png_bytes, filename="4K_no_bg.png")
-        await callback.message.answer_document(
-            document=result_file, 
-            caption="✅ **Rasmingiz original 4K sifatda va ravshanlik yo'qolmagan holda tozalandi!**"
-        )
-        await status_msg.delete()
+        if clean_png_bytes:
+            result_file = BufferedInputFile(clean_png_bytes, filename="4K_UltraHD_no_bg.png")
+            await callback.message.answer_document(
+                document=result_file, 
+                caption="✅ **Rasmingiz original 4K Ultra-HD sifatda foni tozalandi!**",
+                parse_mode="Markdown"
+            )
+            await status_msg.delete()
+        else:
+            await status_msg.edit_text("❌ Ishlov berishda xatolik bo'ldi. Boshqa rasm yuborib ko'ring.")
+        
     except Exception as e:
         logging.error(f"Xatolik: {e}")
-        await status_msg.edit_text("❌ Ishlov berishda xatolik yuz berdi.")
+        await status_msg.edit_text("❌ Rasmni qayta ishlashda xatolik yuz berdi.")
+
+@dp.message()
+async def other_messages(message: types.Message):
+    await message.answer("Iltimos, menga faqat **rasm** yuboring!", parse_mode="Markdown")
 
 async def main():
     await start_dummy_server()
