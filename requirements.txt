@@ -1,5 +1,2 @@
 aiogram
 aiohttp
-rembg
-Pillow
-onnxruntime-cpu
