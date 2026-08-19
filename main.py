@@ -9,7 +9,6 @@ logging.basicConfig(level=logging.INFO)
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 async def handle(request):
-    return web.Response(text="Bot faol ishlamoqda!")
 async def start_dummy_server():
     app = web.Application()
     app.router.add_get('/', handle)
