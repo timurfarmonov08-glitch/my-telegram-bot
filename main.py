@@ -2,7 +2,7 @@ import os
 import io
 import asyncio
 import logging
-from concurrent.futures import ThreadPoolExecutor
+import aiohttp
 from aiohttp import web
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import CommandStart
@@ -12,8 +12,6 @@ from aiogram.types import (
     InlineKeyboardButton, 
     CallbackQuery
 )
-from rembg import remove, new_session
-from PIL import Image
 
 # 1. BOT SOZLAMALARI
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -23,12 +21,7 @@ logging.basicConfig(level=logging.INFO)
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-# Professional va tezkor ishlashi uchun u2netp (yengil va sifatli) modelini tanlaymiz
-session = new_session("u2netp")
-# Neyrotarmoq hisob-kitoblarini asinxron oqimga xalaqit bermasligi uchun alohida potokga ajratamiz
-executor = ThreadPoolExecutor(max_workers=2)
-
-# Render serveri 24/7 o'chmasligi uchun veb-server
+# Render serveri uyquga ketmasligi uchun veb-server
 async def handle(request):
     return web.Response(text="Bot 24/7 faol ishlamoqda!")
 
@@ -50,18 +43,22 @@ def get_sub_keyboard():
         ]
     )
 
-# 3. RASMNI ULTRA-HD SIFATDA QAYTA ISHLASH (PRO ALGORITM)
-def process_image_pro(image_bytes: bytes) -> bytes:
-    input_image = Image.open(io.BytesIO(image_bytes))
-    
-    # rembg yordamida piksel sifatini yo'qotmasdan fonni tozalash
-    output_image = remove(input_image, session=session)
-    
-    output_buffer = io.BytesIO()
-    # PNG shaklida xotiraga 100% sifat bilan saqlash
-    output_image.save(output_buffer, format="PNG", optimize=True, quality=100)
-    output_buffer.seek(0)
-    return output_buffer.read()
+# 3. BEPUL VA CHEKSIZ FONNI TOZALASH FUNKSIYASI (API-KEYSIZ)
+async def remove_bg_free(image_bytes: bytes) -> bytes:
+    async with aiohttp.ClientSession() as session:
+        data = aiohttp.FormData()
+        data.add_field('file', image_bytes, filename='image.jpg', content_type='image/jpeg')
+        
+        # Bepul va tezkor ochiq server
+        async with session.post('https://api.p2p.bg/v1/remove-bg', data=data) as resp:
+            if resp.status == 200:
+                return await resp.read()
+            else:
+                # Zaxira bepul server (xavfsizlik uchun)
+                async with session.post('https://bg-remove.free-api.workers.dev/', data=data) as resp2:
+                    if resp2.status == 200:
+                        return await resp2.read()
+    return None
 
 # 4. BOT MANTIQLARI
 @dp.message(CommandStart())
@@ -104,24 +101,23 @@ async def process_photo_callback(callback: CallbackQuery):
         file_info = await bot.get_file(photo_id)
         photo_bytes = await bot.download_file(file_info.file_path)
         
-        # Parallel oqimda tezkor hisoblash
-        loop = asyncio.get_event_loop()
-        clean_png_bytes = await loop.run_in_executor(
-            executor, process_image_pro, photo_bytes.read()
-        )
+        # Asinxron ravishda bepul serverda fonni tozalash
+        clean_png_bytes = await remove_bg_free(photo_bytes.read())
         
-        # Sifat buzilmasligi uchun Hujjat (Document PNG) ko'rinishida yuborish
-        result_file = BufferedInputFile(clean_png_bytes, filename="pro_no_bg.png")
-        await callback.message.answer_document(
-            document=result_file, 
-            caption="✅ **Rasmingiz Pro (Ultra-HD) sifatda foni tozalandi!**",
-            parse_mode="Markdown"
-        )
-        await status_msg.delete()
+        if clean_png_bytes:
+            result_file = BufferedInputFile(clean_png_bytes, filename="pro_no_bg.png")
+            await callback.message.answer_document(
+                document=result_file, 
+                caption="✅ **Rasmingiz Pro (Ultra-HD) sifatda foni tozalandi!**",
+                parse_mode="Markdown"
+            )
+            await status_msg.delete()
+        else:
+            await status_msg.edit_text("❌ Foni tozalashda xatolik bo'ldi. Boshqa rasm yuborib ko'ring.")
         
     except Exception as e:
         logging.error(f"Xatolik: {e}")
-        await status_msg.edit_text("❌ Rasmni qayta ishlashda xatolik yuz berdi. Iltimos, qaytadan rasm yuboring.")
+        await status_msg.edit_text("❌ Rasmni qayta ishlashda xatolik yuz berdi.")
 
 @dp.message()
 async def other_messages(message: types.Message):
