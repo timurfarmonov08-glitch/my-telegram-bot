@@ -11,8 +11,9 @@ from aiogram.types import (
     CallbackQuery
 )
 
-# 1. BOT SOZLAMALARI
+# 1. SOZLAMALAR
 BOT_TOKEN = os.getenv("BOT_TOKEN")
+REMOVE_BG_API_KEY = os.getenv("REMOVE_BG_API_KEY")
 INSTAGRAM_LINK = "https://www.instagram.com/murodovvv_686"
 
 logging.basicConfig(level=logging.INFO)
@@ -32,31 +33,33 @@ def get_sub_keyboard():
         ]
     )
 
-# 3. YENGIL VA BEPUL FONNI O'CHIRISH (API key shart emas)
-async def remove_bg_fast(image_bytes: bytes) -> bytes:
-    timeout = aiohttp.ClientTimeout(total=30)
+# 3. RASMIY REMOVE.BG APISI
+async def remove_bg_official(image_bytes: bytes) -> bytes:
+    if not REMOVE_BG_API_KEY:
+        logging.error("REMOVE_BG_API_KEY topilmadi!")
+        return None
+
+    timeout = aiohttp.ClientTimeout(total=40)
     async with aiohttp.ClientSession(timeout=timeout) as session:
         data = aiohttp.FormData()
         data.add_field('image_file', image_bytes, filename='photo.jpg', content_type='image/jpeg')
+        data.add_field('size', 'auto')
         
-        url = "https://sdk.photoroom.com/v1/segment"
-        headers = {
-            "User-Agent": "Mozilla/5.0",
-            "x-api-key": "sandbox"
-        }
+        headers = {'X-Api-Key': REMOVE_BG_API_KEY}
         
         try:
-            async with session.post(url, data=data, headers=headers) as resp:
+            async with session.post('https://api.remove.bg/v1.0/removebg', data=data, headers=headers) as resp:
                 if resp.status == 200:
                     return await resp.read()
                 else:
-                    logging.error(f"API xatosi: STATUS {resp.status}")
+                    err_text = await resp.text()
+                    logging.error(f"Remove.bg API xatosi [{resp.status}]: {err_text}")
         except Exception as e:
             logging.error(f"So'rovda xatolik: {e}")
             
     return None
 
-# 4. BOT BUYRUQLARI
+# 4. HANDLERLAR
 @dp.message(CommandStart())
 async def start_cmd(message: types.Message):
     welcome_text = (
@@ -65,11 +68,11 @@ async def start_cmd(message: types.Message):
     )
     await message.answer(welcome_text, reply_markup=get_sub_keyboard(), parse_mode="Markdown")
 
-# Obuna tekshirilganda eski yozuvni O'CHIRIB TASHASH
 @dp.callback_query(F.data == "check_sub")
 async def check_sub_callback(callback: CallbackQuery):
     await callback.answer("✅ Obuna tasdiqlandi!", show_alert=True)
     
+    # Obuna xabarini o'chirish
     try:
         await callback.message.delete()
     except Exception as e:
@@ -77,10 +80,9 @@ async def check_sub_callback(callback: CallbackQuery):
         
     await callback.message.answer("📸 **Ajoyib! Endi menga fonini olib tashlamoqchi bo'lgan rasmingizni yuboring.**", parse_mode="Markdown")
 
-# Rasm kelganda avtomatik ishlash
 @dp.message(F.photo)
 async def handle_photo(message: types.Message):
-    status_msg = await message.answer("⚡ **Rasm foni tozalanmoqda, biroz kuting...**", parse_mode="Markdown")
+    status_msg = await message.answer("⚡ **Rasm foni tozalanmoqda, kuting...**", parse_mode="Markdown")
     
     try:
         photo = message.photo[-1]
@@ -88,7 +90,7 @@ async def handle_photo(message: types.Message):
         photo_bytes_io = await bot.download_file(file_info.file_path)
         photo_bytes = photo_bytes_io.read()
         
-        clean_png_bytes = await remove_bg_fast(photo_bytes)
+        clean_png_bytes = await remove_bg_official(photo_bytes)
         
         if clean_png_bytes:
             result_file = BufferedInputFile(clean_png_bytes, filename="no_bg.png")
@@ -99,11 +101,11 @@ async def handle_photo(message: types.Message):
             )
             await status_msg.delete()
         else:
-            await status_msg.edit_text("❌ Rasmni qayta ishlashda xatolik bo'ldi. Qaytadan urinib ko'ring.")
+            await status_msg.edit_text("❌ API xatosi. Render'da REMOVE_BG_API_KEY kiritilganini tekshiring.")
             
     except Exception as e:
         logging.error(f"Xatolik: {e}")
-        await status_msg.edit_text("❌ Xatolik yuz berdi.")
+        await status_msg.edit_text("❌ Rasmni qayta ishlashda xatolik yuz berdi.")
 
 @dp.message()
 async def other_messages(message: types.Message):
