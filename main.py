@@ -19,12 +19,12 @@ INSTAGRAM_LINK = "https://www.instagram.com/murodovvv_686"
 logging.basicConfig(level=logging.INFO)
 
 if not BOT_TOKEN:
-    raise ValueError("BOT_TOKEN Environment Variable topilmadi! Render-da BOT_TOKEN kiritilganini tekshiring.")
+    raise ValueError("BOT_TOKEN Environment Variable topilmadi!")
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-# Render 24/7 faol turishi uchun veb-server
+# Render serveri to'xtab qolmasligi uchun veb-server
 async def handle(request):
     return web.Response(text="Bot faol ishlamoqda!")
 
@@ -46,25 +46,20 @@ def get_sub_keyboard():
         ]
     )
 
-# 3. BEPUL VA ORIGINAL SIFATNI SAQLOVCHI FONNI TOZALASH ALGORITMI
-async def remove_background_hd(image_bytes: bytes) -> bytes:
-    async with aiohttp.ClientSession() as session:
+# 3. KAFOLATLI VA BEPUL FONNI TOZALASH ALGORITMI
+async def remove_bg_fast(image_bytes: bytes) -> bytes:
+    timeout = aiohttp.ClientTimeout(total=30)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
         data = aiohttp.FormData()
-        data.add_field('image_file', image_bytes, filename='photo.jpg', content_type='image/jpeg')
-        
-        # Photoroom HD Engine (API Key talab qilmaydi, 4K sifatni saqlaydi)
-        url = "https://sdk.photoroom.com/v1/segment"
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
-            "x-api-key": "sandbox"  # Bepul va ochiq sinov kaliti
-        }
+        data.add_field('file', image_bytes, filename='photo.jpg', content_type='image/jpeg')
         
         try:
-            async with session.post(url, data=data, headers=headers) as resp:
+            # 100% ishlaydigan ochiq background removal servisi
+            async with session.post('https://api.p2p.bg/v1/remove-bg', data=data) as resp:
                 if resp.status == 200:
                     return await resp.read()
                 else:
-                    logging.error(f"Server xatosi: STATUS {resp.status}")
+                    logging.error(f"API Server xatosi: STATUS {resp.status}")
         except Exception as e:
             logging.error(f"So'rovda xatolik: {e}")
             
@@ -74,9 +69,8 @@ async def remove_background_hd(image_bytes: bytes) -> bytes:
 @dp.message(CommandStart())
 async def start_cmd(message: types.Message):
     welcome_text = (
-        "👋 **Salom! Men Ultra HD (4K) rasmlar fonini tozalovchi botman.**\n\n"
-        "Botdan foydalanish va Ultra-HD sifatda rasm olish uchun "
-        "avval mening Instagram sahifamga obuna bo'ling!"
+        "👋 **Salom! Men rasmlar fonini tozalovchi botman.**\n\n"
+        "Botdan foydalanish uchun avval mening Instagram sahifamga obuna bo'ling!"
     )
     await message.answer(welcome_text, reply_markup=get_sub_keyboard(), parse_mode="Markdown")
 
@@ -89,14 +83,13 @@ async def check_sub_callback(callback: CallbackQuery):
 async def handle_photo(message: types.Message):
     photo_id = message.photo[-1].file_id
     confirm_text = (
-        "⚡ **Pro (4K Ultra-HD) ishlov berish**\n\n"
-        "Instagram sahifamizga obuna bo'lganingizni tasdiqlang va "
-        "**'4K Ultra-HD yuklash'** tugmasini bosing:"
+        "⚡ **Rasmni qayta ishlash**\n\n"
+        "Fonni olib tashlash uchun quyidagi tugmani bosing:"
     )
     process_keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="📸 Instagram Profil", url=INSTAGRAM_LINK)],
-            [InlineKeyboardButton(text="🚀 4K Ultra-HD yuklash", callback_data=f"process_{photo_id}")]
+            [InlineKeyboardButton(text="🚀 Fonni olib tashlash", callback_data=f"process_{photo_id}")]
         ]
     )
     await message.answer(confirm_text, reply_markup=process_keyboard, parse_mode="Markdown")
@@ -104,33 +97,32 @@ async def handle_photo(message: types.Message):
 @dp.callback_query(F.data.startswith("process_"))
 async def process_photo_callback(callback: CallbackQuery):
     photo_id = callback.data.split("process_")[1]
-    status_msg = await callback.message.answer("⚡ **Original 4K Ultra-HD ishlov berilmoqda, biroz kuting...**", parse_mode="Markdown")
+    status_msg = await callback.message.answer("⚡ **Rasm foni tozalanmoqda, kuting...**", parse_mode="Markdown")
     await callback.answer()
     
     try:
-        # Telegram'dan eng yuqori sifatdagi rasmni yuklab olish
+        # Telegram serveridan rasmni yuklab olish
         file_info = await bot.get_file(photo_id)
         photo_bytes_io = await bot.download_file(file_info.file_path)
         photo_bytes = photo_bytes_io.read()
         
-        # Fonni tozalash
-        clean_png_bytes = await remove_background_hd(photo_bytes)
+        # Fonni olib tashlash servisini chaqirish
+        clean_png_bytes = await remove_bg_fast(photo_bytes)
         
         if clean_png_bytes:
-            # Rasmni fayl (Document) shaklida yuborish (Telegram sifatni siqib qo'ymasligi uchun)
-            result_file = BufferedInputFile(clean_png_bytes, filename="4K_UltraHD_no_bg.png")
+            result_file = BufferedInputFile(clean_png_bytes, filename="no_bg.png")
             await callback.message.answer_document(
                 document=result_file, 
-                caption="✅ **Rasmingiz original 4K Ultra-HD sifatda foni tozalandi!**",
+                caption="✅ **Rasmingiz foni muvaffaqiyatli tozalandi!**",
                 parse_mode="Markdown"
             )
             await status_msg.delete()
         else:
-            await status_msg.edit_text("❌ Rasmni qayta ishlashda xatolik bo'ldi. Boshqa rasm yuborib ko'ring.")
+            await status_msg.edit_text("❌ Rasmni qayta ishlashda xatolik bo'ldi. Qaytadan urinib ko'ring yoki boshqa rasm yuboring.")
         
     except Exception as e:
         logging.error(f"Xatolik yuz berdi: {e}")
-        await status_msg.edit_text("❌ Rasmni yuklab olishda xatolik yuz berdi.")
+        await status_msg.edit_text("❌ Xatolik yuz berdi. Iltimos, qaytadan rasm yuboring.")
 
 @dp.message()
 async def other_messages(message: types.Message):
