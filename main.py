@@ -1,8 +1,10 @@
 import os
+import io
 import asyncio
 import logging
-import aiohttp
 from aiohttp import web
+from PIL import Image
+from rembg import remove
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import CommandStart
 from aiogram.types import (
@@ -12,22 +14,21 @@ from aiogram.types import (
     CallbackQuery
 )
 
-# 1. SOZLAMALAR
+# 1. BOT SOZLAMALARI
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-REMOVE_BG_API_KEY = os.getenv("REMOVE_BG_API_KEY")
 INSTAGRAM_LINK = "https://www.instagram.com/murodovvv_686"
 
 logging.basicConfig(level=logging.INFO)
 
 if not BOT_TOKEN:
-    raise ValueError("BOT_TOKEN topilmadi!")
+    raise ValueError("BOT_TOKEN Environment Variable topilmadi!")
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-# Render to'xtab qolmasligi uchun veb-server
+# Render serveri to'xtab qolmasligi uchun dummy server
 async def handle(request):
-    return web.Response(text="Bot ishlayapti!")
+    return web.Response(text="Bot faol ishlamoqda!")
 
 async def start_dummy_server():
     app = web.Application()
@@ -47,85 +48,65 @@ def get_sub_keyboard():
         ]
     )
 
-# 3. 4K REMOVE.BG FUNKSIYASI
-async def remove_bg_hd(image_bytes: bytes) -> bytes:
-    if not REMOVE_BG_API_KEY:
-        logging.error("REMOVE_BG_API_KEY kiritilmagan!")
-        return None
-        
-    timeout = aiohttp.ClientTimeout(total=60)
-    async with aiohttp.ClientSession(timeout=timeout) as session:
-        data = aiohttp.FormData()
-        data.add_field('image_file', image_bytes, filename='photo.jpg', content_type='image/jpeg')
-        data.add_field('size', 'full')  # Original 4K HD o'lcham
-        
-        headers = {'X-Api-Key': REMOVE_BG_API_KEY}
-        
-        try:
-            async with session.post('https://api.remove.bg/v1.0/removebg', data=data, headers=headers) as resp:
-                if resp.status == 200:
-                    return await resp.read()
-                else:
-                    err = await resp.text()
-                    logging.error(f"Remove.bg Xatosi [{resp.status}]: {err}")
-        except Exception as e:
-            logging.error(f"So'rovda xatolik: {e}")
-            
-    return None
+# 3. BEPUL VA CHEKLOWSIZ FONNI O'CHIRISH FUNKSIYASI (rembg)
+def process_remove_bg(image_bytes: bytes) -> bytes:
+    input_image = Image.open(io.BytesIO(image_bytes))
+    output_image = remove(input_image)
+    
+    output_io = io.BytesIO()
+    output_image.save(output_io, format='PNG')
+    return output_io.getvalue()
 
-# 4. BOT BUYRUQLARI
+# 4. HANDLERLAR
 @dp.message(CommandStart())
 async def start_cmd(message: types.Message):
     welcome_text = (
-        "👋 **Salom! Men rasmlar fonini Ultra HD (4K) sifatda tozalovchi botman.**\n\n"
+        "👋 **Salom! Men rasmlar fonini tozalovchi botman.**\n\n"
         "Botdan foydalanish uchun avval Instagram sahifamizga obuna bo'ling!"
     )
     await message.answer(welcome_text, reply_markup=get_sub_keyboard(), parse_mode="Markdown")
 
-# Obunani tekshirish (ESKI XABARNI O'CHIRADI)
 @dp.callback_query(F.data == "check_sub")
 async def check_sub_callback(callback: CallbackQuery):
     await callback.answer("✅ Obuna tasdiqlandi!", show_alert=True)
     
-    # Eski obuna so'ragan xabarni tugmalari bilan birga o'chirib tashlaymiz
+    # Eski obuna so'ragan xabarni va tugmalarni o'chirish
     try:
         await callback.message.delete()
     except Exception as e:
-        logging.warning(f"Xabarni o'chirishda xatlik: {e}")
+        logging.warning(f"Xabarni o'chirishda xatolik: {e}")
         
     await callback.message.answer("📸 **Ajoyib! Endi menga fonini olib tashlamoqchi bo'lgan rasmingizni yuboring.**", parse_mode="Markdown")
 
-# Rasm kelganda avtomatik ishlov berish
 @dp.message(F.photo)
 async def handle_photo(message: types.Message):
-    # Yuklanayotgani haqida habar beramiz
-    status_msg = await message.answer("⚡ **Rasm foni 4K Ultra-HD sifatda tozalanmoqda, kuting...**", parse_mode="Markdown")
+    status_msg = await message.answer("⚡ **Rasm foni tozalanmoqda, biroz kuting...**", parse_mode="Markdown")
     
     try:
-        # Eng katta sifatdagi rasmni olamiz
+        # Telegram serveridan rasmni yuklab olish
         photo = message.photo[-1]
         file_info = await bot.get_file(photo.file_id)
         photo_bytes_io = await bot.download_file(file_info.file_path)
         photo_bytes = photo_bytes_io.read()
         
-        # Fonini tozalaymiz
-        clean_png_bytes = await remove_bg_hd(photo_bytes)
+        # Async rejimda rembg kutubxonasini ishlatish
+        loop = asyncio.get_event_loop()
+        clean_png_bytes = await loop.run_in_executor(None, process_remove_bg, photo_bytes)
         
         if clean_png_bytes:
-            # Telegram sifatni siqmasligi uchun hujjat (document) ko'rinishida yuboramiz
-            result_file = BufferedInputFile(clean_png_bytes, filename="4K_no_bg.png")
+            result_file = BufferedInputFile(clean_png_bytes, filename="no_bg.png")
             await message.answer_document(
                 document=result_file, 
-                caption="✅ **Rasmingiz foni ideal va 4K sifatda tozalandi!**",
+                caption="✅ **Rasmingiz foni muvaffaqiyatli tozalandi!**",
                 parse_mode="Markdown"
             )
             await status_msg.delete()
         else:
-            await status_msg.edit_text("❌ API bilan bog'lanishda xatolik bo'ldi. Render'da API kalit kiritilganini tekshiring.")
+            await status_msg.edit_text("❌ Rasmni qayta ishlashda xatolik yuz berdi.")
             
     except Exception as e:
-        logging.error(f"Xatolik yuz berdi: {e}")
-        await status_msg.edit_text("❌ Rasmni qayta ishlashda xatolik bo'ldi.")
+        logging.error(f"Xatolik: {e}")
+        await status_msg.edit_text("❌ Xatolik yuz berdi. Qaytadan urinib ko'ring.")
 
 @dp.message()
 async def other_messages(message: types.Message):
