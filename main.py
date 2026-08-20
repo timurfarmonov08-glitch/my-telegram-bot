@@ -1,10 +1,7 @@
 import os
-import io
 import asyncio
 import logging
-from aiohttp import web
-from PIL import Image
-from rembg import remove
+import aiohttp
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import CommandStart
 from aiogram.types import (
@@ -21,25 +18,12 @@ INSTAGRAM_LINK = "https://www.instagram.com/murodovvv_686"
 logging.basicConfig(level=logging.INFO)
 
 if not BOT_TOKEN:
-    raise ValueError("BOT_TOKEN Environment Variable topilmadi!")
+    raise ValueError("BOT_TOKEN topilmadi!")
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-# Render serveri to'xtab qolmasligi uchun dummy server
-async def handle(request):
-    return web.Response(text="Bot faol ishlamoqda!")
-
-async def start_dummy_server():
-    app = web.Application()
-    app.router.add_get('/', handle)
-    runner = web.AppRunner(app)
-    await runner.setup()
-    port = int(os.environ.get("PORT", 8080))
-    site = web.TCPSite(runner, '0.0.0.0', port)
-    await site.start()
-
-# 2. TUGMA
+# 2. INSTAGRAM OBUNA TUGMASI
 def get_sub_keyboard():
     return InlineKeyboardMarkup(
         inline_keyboard=[
@@ -48,16 +32,31 @@ def get_sub_keyboard():
         ]
     )
 
-# 3. BEPUL VA CHEKLOWSIZ FONNI O'CHIRISH FUNKSIYASI (rembg)
-def process_remove_bg(image_bytes: bytes) -> bytes:
-    input_image = Image.open(io.BytesIO(image_bytes))
-    output_image = remove(input_image)
-    
-    output_io = io.BytesIO()
-    output_image.save(output_io, format='PNG')
-    return output_io.getvalue()
+# 3. YENGIL VA BEPUL FONNI O'CHIRISH (API key shart emas)
+async def remove_bg_fast(image_bytes: bytes) -> bytes:
+    timeout = aiohttp.ClientTimeout(total=30)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        data = aiohttp.FormData()
+        data.add_field('image_file', image_bytes, filename='photo.jpg', content_type='image/jpeg')
+        
+        url = "https://sdk.photoroom.com/v1/segment"
+        headers = {
+            "User-Agent": "Mozilla/5.0",
+            "x-api-key": "sandbox"
+        }
+        
+        try:
+            async with session.post(url, data=data, headers=headers) as resp:
+                if resp.status == 200:
+                    return await resp.read()
+                else:
+                    logging.error(f"API xatosi: STATUS {resp.status}")
+        except Exception as e:
+            logging.error(f"So'rovda xatolik: {e}")
+            
+    return None
 
-# 4. HANDLERLAR
+# 4. BOT BUYRUQLARI
 @dp.message(CommandStart())
 async def start_cmd(message: types.Message):
     welcome_text = (
@@ -66,11 +65,11 @@ async def start_cmd(message: types.Message):
     )
     await message.answer(welcome_text, reply_markup=get_sub_keyboard(), parse_mode="Markdown")
 
+# Obuna tekshirilganda eski yozuvni O'CHIRIB TASHASH
 @dp.callback_query(F.data == "check_sub")
 async def check_sub_callback(callback: CallbackQuery):
     await callback.answer("✅ Obuna tasdiqlandi!", show_alert=True)
     
-    # Eski obuna so'ragan xabarni va tugmalarni o'chirish
     try:
         await callback.message.delete()
     except Exception as e:
@@ -78,20 +77,18 @@ async def check_sub_callback(callback: CallbackQuery):
         
     await callback.message.answer("📸 **Ajoyib! Endi menga fonini olib tashlamoqchi bo'lgan rasmingizni yuboring.**", parse_mode="Markdown")
 
+# Rasm kelganda avtomatik ishlash
 @dp.message(F.photo)
 async def handle_photo(message: types.Message):
     status_msg = await message.answer("⚡ **Rasm foni tozalanmoqda, biroz kuting...**", parse_mode="Markdown")
     
     try:
-        # Telegram serveridan rasmni yuklab olish
         photo = message.photo[-1]
         file_info = await bot.get_file(photo.file_id)
         photo_bytes_io = await bot.download_file(file_info.file_path)
         photo_bytes = photo_bytes_io.read()
         
-        # Async rejimda rembg kutubxonasini ishlatish
-        loop = asyncio.get_event_loop()
-        clean_png_bytes = await loop.run_in_executor(None, process_remove_bg, photo_bytes)
+        clean_png_bytes = await remove_bg_fast(photo_bytes)
         
         if clean_png_bytes:
             result_file = BufferedInputFile(clean_png_bytes, filename="no_bg.png")
@@ -102,18 +99,17 @@ async def handle_photo(message: types.Message):
             )
             await status_msg.delete()
         else:
-            await status_msg.edit_text("❌ Rasmni qayta ishlashda xatolik yuz berdi.")
+            await status_msg.edit_text("❌ Rasmni qayta ishlashda xatolik bo'ldi. Qaytadan urinib ko'ring.")
             
     except Exception as e:
         logging.error(f"Xatolik: {e}")
-        await status_msg.edit_text("❌ Xatolik yuz berdi. Qaytadan urinib ko'ring.")
+        await status_msg.edit_text("❌ Xatolik yuz berdi.")
 
 @dp.message()
 async def other_messages(message: types.Message):
     await message.answer("Iltimos, menga faqat **rasm** yuboring!", parse_mode="Markdown")
 
 async def main():
-    await start_dummy_server()
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
